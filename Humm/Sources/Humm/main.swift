@@ -18,6 +18,12 @@ if CommandLine.arguments.contains("--selftest-snippets") {
 if CommandLine.arguments.contains("--selftest-history") {
     exit(MainActor.assumeIsolated { SelfTest.history() })
 }
+if CommandLine.arguments.contains("--selftest-costs") {
+    exit(MainActor.assumeIsolated { SelfTest.costs() })
+}
+if CommandLine.arguments.contains("--selftest-key") {
+    exit(SelfTest.keyFile())
+}
 
 // Dictionary checks (see DictionaryTests).
 if let index = CommandLine.arguments.firstIndex(of: "--selftest-dictionary") {

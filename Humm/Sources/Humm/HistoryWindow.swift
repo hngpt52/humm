@@ -120,7 +120,7 @@ private struct HistoryView: View {
         }
     }
 
-    /// "14:02 · Google Chrome · 12 s", noting when it was not pasted.
+    /// "14:02 · Google Chrome · 12 s · $0.0004", noting when it was not pasted.
     private static func details(_ transcript: Transcript) -> String {
         var parts = [transcript.date.formatted(date: .omitted, time: .shortened)]
         switch transcript.outcome {
@@ -129,6 +129,7 @@ private struct HistoryView: View {
         case .copied: parts.append("copied")
         }
         parts.append("\(max(1, Int(transcript.seconds.rounded()))) s")
+        if let cost = transcript.cost { parts.append(CostTracker.money(cost)) }
         return parts.joined(separator: " · ")
     }
 

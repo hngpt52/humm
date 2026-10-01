@@ -22,6 +22,8 @@ struct Transcript: Codable, Identifiable, Equatable {
     /// Length of the recording, in seconds.
     let seconds: Double
     let model: String
+    /// What the transcription cost, in US dollars (see CostTracker). Older entries have none.
+    var cost: Double? = nil
 }
 
 /// Past transcripts, newest first, in ~/.config/humm/history.json (private to the user), so they

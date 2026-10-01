@@ -31,7 +31,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         menu.removeAllItems()
         menu.addItem(info(state.statusText))
         if let ms = state.lastLatencyMs {
-            menu.addItem(info("Last: \(ms) ms from stop to paste"))
+            menu.addItem(info("Last: \(ms) ms from stop to paste" + (state.lastCost.map { ", " + CostTracker.money($0) } ?? "")))
         }
         menu.addItem(.separator())
 
@@ -44,6 +44,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         let british = action("British Spelling", #selector(toggleBritishSpelling))
         british.state = state.britishSpelling ? .on : .off
         menu.addItem(british)
+        menu.addItem(costsItem())
         menu.addItem(.separator())
 
         let keys = action("Keyboard Shortcuts", #selector(toggleKeyboardShortcuts))
@@ -68,6 +69,12 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         let pill = action("Show Floating Pill", #selector(toggleFloatingButton))
         pill.state = state.showFloatingButton ? .on : .off
         menu.addItem(pill)
+        if NSScreen.screens.count > 1 {
+            let follow = action("Pill Follows Mouse Between Displays", #selector(togglePillFollowsMouse))
+            follow.state = state.pillFollowsMouse ? .on : .off
+            follow.isEnabled = state.showFloatingButton
+            menu.addItem(follow)
+        }
         let reset = action("Reset Pill Position", #selector(resetPill))
         reset.isEnabled = state.showFloatingButton
         menu.addItem(reset)
@@ -85,11 +92,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         let copy = action("Copy Last Transcript", #selector(copyLastTranscript))
         copy.isEnabled = !state.lastTranscript.isEmpty
         menu.addItem(copy)
-        if let file = APIKeyStore.locate()?.file {
-            menu.addItem(action("API Key: \((file.path as NSString).abbreviatingWithTildeInPath)", #selector(revealKeyFile)))
-        } else {
-            menu.addItem(action("Add API Key…", #selector(revealKeyFile)))
-        }
+        menu.addItem(action(APIKeyStore.locate() == nil ? "Add API Key…" : "Change API Key…", #selector(setAPIKey)))
         if !Paster.isTrusted(prompt: false) {
             menu.addItem(action("Grant Accessibility (to paste and learn)…", #selector(grantAccessibility)))
         }
@@ -134,6 +137,31 @@ final class StatusMenu: NSObject, NSMenuDelegate {
             : transcript.date.formatted(.dateTime.day().month(.abbreviated))
         let text = transcript.text.replacingOccurrences(of: "\n", with: " ")
         return "\(when)   " + (text.count > 60 ? String(text.prefix(59)) + "…" : text)
+    }
+
+    /// Costs submenu: what transcription has cost, from the usage OpenAI reports with each request.
+    private func costsItem() -> NSMenuItem {
+        let costs = state.costs
+        let item = NSMenuItem(title: "Costs: \(CostTracker.money(costs.total(.thisMonth).cost)) This Month", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+        if let first = costs.firstDay {
+            submenu.addItem(info("Today: " + CostTracker.describe(costs.total(.today))))
+            submenu.addItem(info("Yesterday: " + CostTracker.describe(costs.total(.yesterday))))
+            submenu.addItem(info("This month: " + CostTracker.describe(costs.total(.thisMonth))))
+            // Only once there is a last month to speak of.
+            if CostTracker.dayKey(first).prefix(7) != CostTracker.dayKey(Date()).prefix(7) {
+                submenu.addItem(info("Last month: " + CostTracker.describe(costs.total(.lastMonth))))
+            }
+            submenu.addItem(info("Since \(first.formatted(.dateTime.day().month(.wide).year())): " + CostTracker.describe(costs.total(.allTime))))
+        } else {
+            submenu.addItem(info("Nothing yet. Each dictation's cost is added here."))
+        }
+        submenu.addItem(.separator())
+        submenu.addItem(info("From the usage OpenAI reports, at its prices on \(TranscriptionModel.pricesChecked)."))
+        submenu.addItem(action("Open OpenAI Usage…", #selector(openOpenAIUsage)))
+        item.submenu = submenu
+        return item
     }
 
     /// Dictionary submenu: every word, each with a Remove item, and the file for hand edits.
@@ -242,6 +270,11 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         state.removeWord(text)
     }
 
+    @objc private func openOpenAIUsage() {
+        Log.input.notice("menu: openai usage")
+        NSWorkspace.shared.open(URL(string: "https://platform.openai.com/usage")!)
+    }
+
     @objc private func openDictionaryFile() {
         // The default editor for .json: TextEdit would turn typed quotes into curly ones.
         let dictionary = state.dictionary
@@ -259,6 +292,11 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         state.showFloatingButton.toggle()
     }
 
+    @objc private func togglePillFollowsMouse() {
+        Log.input.notice("menu: pill follows mouse")
+        state.pillFollowsMouse.toggle()
+    }
+
     @objc private func toggleOpenAtLogin() {
         Log.input.notice("menu: open at login")
         state.setOpenAtLogin(!LoginItem.isEnabled)
@@ -272,9 +310,9 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         Paster.copy(state.lastTranscript)
     }
 
-    @objc private func revealKeyFile() {
-        let file = APIKeyStore.locate()?.file ?? APIKeyStore.createUserFileIfMissing()
-        NSWorkspace.shared.activateFileViewerSelecting([file])
+    @objc private func setAPIKey() {
+        Log.input.notice("menu: api key")
+        KeyPrompt.run()
     }
 
     @objc private func grantAccessibility() {

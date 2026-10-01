@@ -49,6 +49,8 @@ final class AppState {
     private(set) var lastTranscript = ""
     /// Stop to text pasted, in milliseconds.
     private(set) var lastLatencyMs: Int?
+    /// What the last transcription cost, in US dollars.
+    private(set) var lastCost: Double?
 
     var model: TranscriptionModel {
         didSet {
@@ -59,6 +61,13 @@ final class AppState {
     var showFloatingButton: Bool {
         didSet {
             UserDefaults.standard.set(showFloatingButton, forKey: "showFloatingButton")
+            onChange()
+        }
+    }
+    /// With more than one display, the pill moves to the one the pointer is on (see FloatingPill).
+    var pillFollowsMouse: Bool {
+        didSet {
+            UserDefaults.standard.set(pillFollowsMouse, forKey: "pillFollowsMouse")
             onChange()
         }
     }
@@ -99,6 +108,7 @@ final class AppState {
 
     let dictionary = UserDictionary()
     let history: TranscriptHistory
+    let costs: CostTracker
 
     /// Turn American spellings into British ones (see BritishSpelling). On by default where British
     /// spelling is the norm.
@@ -154,6 +164,7 @@ final class AppState {
         let defaults = UserDefaults.standard
         model = defaults.string(forKey: "model").flatMap(TranscriptionModel.init(rawValue:)) ?? .gpt4oMiniTranscribe
         showFloatingButton = defaults.object(forKey: "showFloatingButton") as? Bool ?? true
+        pillFollowsMouse = defaults.object(forKey: "pillFollowsMouse") as? Bool ?? true
         playSounds = defaults.object(forKey: "playSounds") as? Bool ?? true
         keyboardShortcuts = defaults.object(forKey: "keyboardShortcuts") as? Bool ?? true
         keepHistory = defaults.object(forKey: "keepHistory") as? Bool ?? true
@@ -167,6 +178,10 @@ final class AppState {
         snippets = arguments.firstIndex(of: "--snippets-file").flatMap { index in
             index + 1 < arguments.count ? SnippetStore(file: URL(fileURLWithPath: arguments[index + 1])) : nil
         } ?? SnippetStore()
+        // `--costs-file <path>` likewise.
+        costs = arguments.firstIndex(of: "--costs-file").flatMap { index in
+            index + 1 < arguments.count ? CostTracker(file: URL(fileURLWithPath: arguments[index + 1])) : nil
+        } ?? CostTracker()
         learnFromCorrections = defaults.object(forKey: "learnFromCorrections") as? Bool ?? true
         corrections.isEnabled = learnFromCorrections
         corrections.onCorrections = { [weak self] found in self?.learn(found) }
@@ -180,7 +195,7 @@ final class AppState {
         switch phase {
         case .idle:
             APIKeyStore.locate() == nil
-                ? "No API key: add OPENAI_API_KEY to a .env file."
+                ? "No API key: choose Add API Key… in the menu."
                 : keyboardShortcuts ? "Ready. Hold ⌃ Ctrl + ⌥ Opt to dictate, or click the pill." : "Ready. Click the pill to dictate."
         case .recording:
             mode == .handsFree
@@ -314,10 +329,10 @@ final class AppState {
 
     // MARK: History
 
-    private func record(_ text: String, _ outcome: Transcript.Outcome, seconds: TimeInterval, model: TranscriptionModel) {
+    private func record(_ text: String, _ outcome: Transcript.Outcome, seconds: TimeInterval, model: TranscriptionModel, cost: Double) {
         guard keepHistory else { return }
         history.add(Transcript(text: text, app: NSWorkspace.shared.frontmostApplication?.localizedName,
-                               outcome: outcome, seconds: seconds, model: model.rawValue))
+                               outcome: outcome, seconds: seconds, model: model.rawValue, cost: cost))
     }
 
     func copyFromHistory(_ transcript: Transcript) {
@@ -420,7 +435,7 @@ final class AppState {
         closeTranscript()
         closeLearned()
         guard APIKeyStore.locate() != nil else {
-            fail("No API key. Add OPENAI_API_KEY to a .env file.")
+            fail("No API key: choose Add API Key… in the Humm menu.")
             return
         }
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -470,7 +485,7 @@ final class AppState {
         }
         guard let apiKey = APIKeyStore.locate()?.key else {
             try? FileManager.default.removeItem(at: clip.url)
-            fail("No API key. Add OPENAI_API_KEY to a .env file.")
+            fail("No API key: choose Add API Key… in the Humm menu.")
             return
         }
         phase = .transcribing
@@ -488,9 +503,14 @@ final class AppState {
                         return
                     }
                 }
-                var text = try await Transcriber.transcribe(fileURL: clip.url, model: model, apiKey: apiKey, prompt: hint)
+                let result = try await Transcriber.transcribe(fileURL: clip.url, model: model, apiKey: apiKey, prompt: hint)
                 guard let self else { return }
                 self.lastLatencyMs = Int(Date().timeIntervalSince(stopped) * 1000)
+                // Billed whatever happens next, noise included.
+                let cost = model.cost(of: result.usage, recordedSeconds: clip.duration)
+                self.costs.add(cost, usage: result.usage, seconds: clip.duration, model: model)
+                self.lastCost = cost
+                var text = result.text
                 guard !Transcriber.isNoise(text, hint: hint) else {
                     Log.app.notice("transcript dropped as noise")
                     self.phase = .notice("Heard nothing to transcribe.")
@@ -507,18 +527,18 @@ final class AppState {
                     let target = Focus.pasteTarget()
                     guard target != .other else {
                         Log.app.notice("no text box selected: offering the transcript to copy")
-                        self.record(text, .offered, seconds: clip.duration, model: model)
+                        self.record(text, .offered, seconds: clip.duration, model: model, cost: cost)
                         self.phase = .idle
                         self.offerTranscript(text)
                         return
                     }
-                    self.record(text, .pasted, seconds: clip.duration, model: model)
+                    self.record(text, .pasted, seconds: clip.duration, model: model, cost: cost)
                     Paster.paste(text)
                     self.phase = .done
                     // A snippet's text is not what was said: nothing to learn from edits to it.
                     if expanded.count == 0 { self.corrections.watch(pasted: text) }
                 } else {
-                    self.record(text, .copied, seconds: clip.duration, model: model)
+                    self.record(text, .copied, seconds: clip.duration, model: model, cost: cost)
                     Paster.copy(text)
                     self.phase = .notice("Copied: press ⌘V. Allow Accessibility to auto-paste.")
                 }

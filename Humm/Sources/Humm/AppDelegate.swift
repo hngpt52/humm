@@ -54,6 +54,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if arguments.contains("--open-at-login") {
             state.setOpenAtLogin(true)
         }
+        // Installed from the disk image there is no script to add the key, so ask for it.
+        // `--preview-key-prompt` shows the prompt without taking focus.
+        if arguments.contains("--preview-key-prompt") {
+            Task { @MainActor in KeyPrompt.run(activate: false) }
+        } else if APIKeyStore.locate() == nil, !arguments.contains(where: { $0.hasPrefix("--preview") }) {
+            Task { @MainActor in KeyPrompt.run() }
+        }
         Log.app.notice("launched: accessibility=\(Paster.isTrusted(prompt: false), privacy: .public) keyFound=\(APIKeyStore.locate() != nil, privacy: .public) mic=\(AVCaptureDevice.authorizationStatus(for: .audio).rawValue, privacy: .public)")
     }
 }

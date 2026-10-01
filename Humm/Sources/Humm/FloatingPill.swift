@@ -165,6 +165,12 @@ final class FloatingPill {
     private var placement: Placement
     private var grabOffset = NSPoint.zero
     private var levelTimer: Timer?
+    private var isDragging = false
+    private var pointerMonitor: Any?
+    /// The display the pointer moved to, while waiting to see that it stays there.
+    private var pendingScreenID: UInt32?
+    /// Developer previews put the pill on a chosen display, so there it stays.
+    private let mayFollowPointer = !CommandLine.arguments.contains { $0.hasPrefix("--preview") }
 
     init(state: AppState) {
         self.state = state
@@ -192,6 +198,11 @@ final class FloatingPill {
                                                object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.applyPlacement() }
         }
+        // Mouse movement in other apps; no permission needed.
+        pointerMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]) { [weak self] _ in
+            MainActor.assumeIsolated { self?.followPointer() }
+        }
+        if let screen = screenToFollow() { placement.screenID = Self.id(of: screen) }  // start where the pointer is
         applyPlacement()
         refresh()
     }
@@ -207,6 +218,7 @@ final class FloatingPill {
             panel.orderOut(nil)
         }
         placeCard()
+        followPointer()  // e.g. just switched on, or the pointer moved while no event came
     }
 
     /// A card sits beside the pill, on the inward side: the transcript to copy when it had nowhere
@@ -318,7 +330,52 @@ final class FloatingPill {
         if state.transcriptToCopy != nil || state.learnedNotice != nil { placeCard() }  // follow the pill
     }
 
+    // MARK: Following the pointer
+
+    /// The display the pointer is on, when the pill should follow it there.
+    private func screenToFollow() -> NSScreen? {
+        guard mayFollowPointer, state.pillFollowsMouse, state.showFloatingButton, !isDragging, NSScreen.screens.count > 1 else { return nil }
+        let pointer = NSEvent.mouseLocation
+        return NSScreen.screens.first { NSMouseInRect(pointer, $0.frame, false) }
+    }
+
+    /// Once the pointer has stayed on another display for a moment (not just passed through a
+    /// corner of it), the pill moves there, keeping its edge and its place along it. The saved
+    /// placement is left alone: it is where the user put the pill, the display aside.
+    private func followPointer() {
+        guard let screen = screenToFollow() else { return }
+        let target = Self.id(of: screen)
+        guard target != placement.screenID else {
+            pendingScreenID = nil
+            return
+        }
+        guard pendingScreenID != target else { return }
+        pendingScreenID = target
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard let self, self.pendingScreenID == target else { return }
+            self.pendingScreenID = nil
+            guard let screen = self.screenToFollow(), Self.id(of: screen) == target else { return }
+            self.placement.screenID = target
+            Log.input.notice("pill followed the pointer to display \(target, privacy: .public)")
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.1
+                self.panel.animator().alphaValue = 0
+            } completionHandler: { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.applyPlacement()
+                    NSAnimationContext.runAnimationGroup { context in
+                        context.duration = 0.15
+                        self.panel.animator().alphaValue = 1
+                    }
+                }
+            }
+        }
+    }
+
     private func dragBegan(at mouse: NSPoint) {
+        isDragging = true
         let centre = NSPoint(x: panel.frame.minX + view.pillCentre.x, y: panel.frame.minY + view.pillCentre.y)
         grabOffset = NSPoint(x: mouse.x - centre.x, y: mouse.y - centre.y)
         showGuides(on: currentScreen)
@@ -337,6 +394,7 @@ final class FloatingPill {
     }
 
     private func dragEnded() {
+        isDragging = false
         guides.hide()
         UserDefaults.standard.set("\(placement.screenID)|\(placement.rail.rawValue)|\(placement.fraction)",
                                   forKey: Self.placementKey)

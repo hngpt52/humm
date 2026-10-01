@@ -27,12 +27,18 @@ enum HummError: LocalizedError {
     }
 }
 
+struct Transcription {
+    let text: String
+    /// What OpenAI reported the request used; nil if the response did not say.
+    let usage: Usage?
+}
+
 /// POST /v1/audio/transcriptions with a multipart upload.
 enum Transcriber {
     private static let endpoint = URL(string: "https://api.openai.com/v1/audio/transcriptions")!
 
     /// `prompt` hints at spellings (see UserDictionary.hint).
-    static func transcribe(fileURL: URL, model: TranscriptionModel, apiKey: String, prompt: String? = nil) async throws -> String {
+    static func transcribe(fileURL: URL, model: TranscriptionModel, apiKey: String, prompt: String? = nil) async throws -> Transcription {
         let boundary = "humm-\(UUID().uuidString)"
         var body = Data()
         func field(_ name: String, _ value: String) {
@@ -61,7 +67,8 @@ enum Transcriber {
             let message = (json?["error"] as? [String: Any])?["message"] as? String ?? "request failed"
             throw HummError.api(status: status, message: String(message.prefix(200)))
         }
-        return ((json?["text"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return Transcription(text: ((json?["text"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                             usage: Usage(json: json?["usage"]))
     }
 
     /// Transcripts that are not speech. Given silence, gpt-4o-mini-transcribe repeats the hint back

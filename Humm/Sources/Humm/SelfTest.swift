@@ -71,6 +71,116 @@ enum SelfTest {
         return failures == 0 ? 0 : 1
     }
 
+    /// `Humm --selftest-costs`: usage, prices and the costs file, without the network or the interface.
+    @MainActor
+    static func costs() -> Int32 {
+        var failures = 0
+        func check(_ ok: Bool, _ name: String, _ detail: @autoclosure () -> String = "") {
+            print((ok ? "PASS " : "FAIL ") + name + (ok ? "" : " " + detail()))
+            if !ok { failures += 1 }
+        }
+        func near(_ a: Double, _ b: Double) -> Bool { abs(a - b) < 1e-12 }
+
+        // Usage, as OpenAI reports it.
+        let tokens = Usage(json: ["type": "tokens", "input_tokens": 1000, "output_tokens": 200, "total_tokens": 1200,
+                                  "input_token_details": ["audio_tokens": 900, "text_tokens": 100]])
+        check(tokens == Usage(inputTokens: 1000, outputTokens: 200), "reads token usage", "\(String(describing: tokens))")
+        check(Usage(json: ["type": "duration", "seconds": 27]) == Usage(seconds: 27), "reads duration usage")
+        check(Usage(json: nil) == nil && Usage(json: ["type": "other"]) == nil, "no usage reported, none read")
+
+        // Prices.
+        let mini = TranscriptionModel.gpt4oMiniTranscribe, whisper = TranscriptionModel.whisper1
+        check(near(mini.cost(of: tokens, recordedSeconds: 60), 0.00225), "gpt-4o-mini-transcribe: $1.25 a million tokens in, $5 out",
+              "\(mini.cost(of: tokens, recordedSeconds: 60))")
+        check(near(mini.cost(of: nil, recordedSeconds: 60), 0.003), "no usage: estimated at $0.003 a minute")
+        check(near(whisper.cost(of: Usage(seconds: 30), recordedSeconds: 31), 0.003), "whisper-1: $0.006 a minute billed")
+        check(near(whisper.cost(of: nil, recordedSeconds: 30), 0.003), "no usage: the recording's length")
+
+        // The costs file.
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("humm-costs-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let now = calendar.date(from: DateComponents(year: 2026, month: 10, day: 1, hour: 12))!
+        let tracker = CostTracker(file: file)
+        check(tracker.firstDay == nil && tracker.total(.allTime, now: now) == CostTracker.Total(), "starts empty")
+        tracker.add(0.002, usage: tokens, seconds: 40, model: mini, at: now)
+        tracker.add(0.001, usage: nil, seconds: 20, model: mini, at: now)
+        tracker.add(0.003, usage: Usage(seconds: 30), seconds: 30, model: whisper, at: now)
+        tracker.add(0.010, usage: nil, seconds: 200, model: mini, at: calendar.date(byAdding: .day, value: -1, to: now)!)
+        tracker.add(0.020, usage: nil, seconds: 400, model: mini, at: calendar.date(byAdding: .day, value: -40, to: now)!)
+        func matches(_ period: CostTracker.Period, _ requests: Int, _ seconds: Double, _ cost: Double) -> Bool {
+            let total = tracker.total(period, now: now)
+            return total.requests == requests && near(total.seconds, seconds) && near(total.cost, cost)
+        }
+        check(matches(.today, 3, 90, 0.006), "today, both models together", "\(tracker.total(.today, now: now))")
+        check(matches(.yesterday, 1, 200, 0.010), "yesterday, across the month's start")
+        check(matches(.thisMonth, 3, 90, 0.006), "this month")
+        check(matches(.lastMonth, 1, 200, 0.010), "last month")
+        check(matches(.allTime, 5, 690, 0.036), "since the start", "\(tracker.total(.allTime, now: now))")
+        check(tracker.days.count == 4, "one row per day and model", "\(tracker.days.count)")
+        check(tracker.days.first?.inputTokens == 1000 && tracker.days.first?.outputTokens == 200, "keeps the token counts")
+        check(tracker.firstDay == calendar.date(from: DateComponents(year: 2026, month: 8, day: 22)), "remembers the first day")
+
+        let reloaded = CostTracker(file: file)
+        check(reloaded.days == tracker.days, "saved and read back")
+        let permissions = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.posixPermissions] as? Int
+        check(permissions == 0o600, "file is private (0600)")
+        let saved = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+        check(!saved.contains("text"), "holds numbers, never what was said")
+
+        try? Data("{ not json".utf8).write(to: file)
+        let broken = CostTracker(file: file)
+        let asides = (try? FileManager.default.contentsOfDirectory(at: file.deletingLastPathComponent(), includingPropertiesForKeys: nil))?
+            .filter { $0.lastPathComponent.hasPrefix(file.deletingPathExtension().lastPathComponent + ".unreadable-") } ?? []
+        check(broken.days.isEmpty && asides.count == 1, "an unreadable file is kept aside, not overwritten")
+        asides.forEach { try? FileManager.default.removeItem(at: $0) }
+
+        // How amounts read.
+        for (dollars, expected) in [(0.0, "$0.00"), (0.41, "$0.41"), (12.5, "$12.50"), (0.0042, "$0.0042"), (0.05, "$0.05"),
+                                    (0.0123, "$0.012"), (0.000_31, "$0.00031"), (0.0999, "$0.10")] {
+            check(CostTracker.money(dollars) == expected, "\(expected)", "got \(CostTracker.money(dollars)) for \(dollars)")
+        }
+        for (seconds, expected) in [(45.0, "45 s"), (240, "4 min"), (4320, "1 h 12 min"), (7200, "2 h")] {
+            check(CostTracker.duration(seconds) == expected, expected, "got \(CostTracker.duration(seconds))")
+        }
+        check(CostTracker.describe(CostTracker.Total(requests: 1, seconds: 12, cost: 0.0004)) == "$0.0004 · 1 dictation, 12 s", "one dictation")
+        check(CostTracker.describe(CostTracker.Total()) == "$0.00", "nothing")
+
+        print(failures == 0 ? "all passed" : "\(failures) failed")
+        return failures == 0 ? 0 : 1
+    }
+
+    /// `Humm --selftest-key`: saving and reading the key file, on a scratch file (never the real one).
+    static func keyFile() -> Int32 {
+        var failures = 0
+        func check(_ ok: Bool, _ name: String) {
+            print((ok ? "PASS " : "FAIL ") + name)
+            if !ok { failures += 1 }
+        }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("humm-key-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent(".env")
+        let first = "sk-test-" + String(repeating: "a", count: 24), second = "sk-proj-" + String(repeating: "b", count: 24)
+
+        check(APIKeyStore.locate(in: file) == nil, "no file, no key")
+        check((try? APIKeyStore.save(first, to: file)) != nil && APIKeyStore.locate(in: file)?.key == first, "saves a key and reads it back")
+        let attributes = { (path: String) in (try? FileManager.default.attributesOfItem(atPath: path))?[.posixPermissions] as? Int }
+        check(attributes(file.path) == 0o600 && attributes(folder.path) == 0o700, "file 0600, folder 0700")
+
+        try? Data("# notes\nexport OPENAI_API_KEY=\"\(first)\"\nOTHER=1\n".utf8).write(to: file)
+        try? APIKeyStore.save(second, to: file)
+        let saved = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+        check(APIKeyStore.locate(in: file)?.key == second, "replaces the key")
+        check(saved.contains("# notes") && saved.contains("OTHER=1") && !saved.contains(first), "keeps the other lines, drops the old key")
+
+        check(APIKeyStore.isPlausible(second), "an OpenAI key looks like one")
+        check(!APIKeyStore.isPlausible("hello") && !APIKeyStore.isPlausible("sk-short") && !APIKeyStore.isPlausible("sk-proj-has a space in it ok"),
+              "other text does not")
+        print(failures == 0 ? "all passed" : "\(failures) failed")
+        return failures == 0 ? 0 : 1
+    }
+
     /// `Humm --selftest-history`: the history file, without the network or the interface.
     @MainActor
     static func history() -> Int32 {
@@ -182,8 +292,10 @@ enum SelfTest {
             for run in 1...runs {
                 let started = Date()
                 do {
-                    let text = try await Transcriber.transcribe(fileURL: file, model: model, apiKey: found.key, prompt: prompt)
-                    print("\(model.rawValue) run \(run): OK \(Int(Date().timeIntervalSince(started) * 1000)) ms  \"\(text)\"")
+                    let result = try await Transcriber.transcribe(fileURL: file, model: model, apiKey: found.key, prompt: prompt)
+                    let usage = result.usage.map { $0.seconds > 0 ? "\($0.seconds) s billed" : "\($0.inputTokens) tokens in, \($0.outputTokens) out" }
+                    let cost = CostTracker.money(model.cost(of: result.usage, recordedSeconds: 0))
+                    print("\(model.rawValue) run \(run): OK \(Int(Date().timeIntervalSince(started) * 1000)) ms, \(cost) (\(usage ?? "no usage reported"))  \"\(result.text)\"")
                 } catch {
                     failures += 1
                     print("\(model.rawValue) run \(run): FAIL \(error.localizedDescription)")
