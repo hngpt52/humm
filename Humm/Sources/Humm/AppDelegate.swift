@@ -10,6 +10,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var insightsWindow: InsightsWindow?
     private var snippetsWindow: SnippetsWindow?
 
+    func applicationWillTerminate(_ notification: Notification) {
+        state?.discardFailedRecording()  // a kept recording never outlives the app
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let state = AppState()
         let statusMenu = StatusMenu(state: state)

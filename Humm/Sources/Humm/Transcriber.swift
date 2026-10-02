@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 enum TranscriptionModel: String, CaseIterable, Identifiable {
@@ -35,7 +36,8 @@ struct Transcription {
 
 /// POST /v1/audio/transcriptions with a multipart upload.
 enum Transcriber {
-    private static let endpoint = URL(string: "https://api.openai.com/v1/audio/transcriptions")!
+    /// Changed only by `--selftest --endpoint`, to test against a local stand-in.
+    static var endpoint = URL(string: "https://api.openai.com/v1/audio/transcriptions")!
 
     /// `prompt` hints at spellings (see UserDictionary.hint).
     static func transcribe(fileURL: URL, model: TranscriptionModel, apiKey: String, prompt: String? = nil) async throws -> Transcription {
@@ -53,13 +55,40 @@ enum Transcriber {
         body.append(try Data(contentsOf: fileURL))
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
 
-        var request = URLRequest(url: endpoint, timeoutInterval: 60)
+        // Replies take 1 to 5 s (median 1.1 s over 96 requests), so one still waiting long past
+        // that is lost: it is abandoned and sent once more, on a new connection.
+        let limit = 15 + audioSeconds(fileURL) * 0.1
+        var request = URLRequest(url: endpoint, timeoutInterval: limit)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
+        var attempt = 1
+        while true {
+            let started = Date()
+            do {
+                return try await send(request, body: body, model: model, limit: limit)
+            } catch {
+                let ms = Int(Date().timeIntervalSince(started) * 1000)
+                Log.net.error("\(model.rawValue, privacy: .public) attempt \(attempt, privacy: .public) failed after \(ms, privacy: .public) ms: \(Self.code(of: error), privacy: .public)")
+                guard attempt < 2, isWorthRetrying(error) else { throw error }
+                attempt += 1
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        }
+    }
+
+    /// One attempt on a connection of its own. A connection kept open from an earlier request
+    /// can die without a word (twice through a VPN tunnel, after two or three idle minutes) and
+    /// swallow the next request whole; a new one costs about a tenth of a second.
+    private static func send(_ request: URLRequest, body: Data, model: TranscriptionModel, limit: TimeInterval) async throws -> Transcription {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = limit
+        configuration.timeoutIntervalForResource = limit
+        let session = URLSession(configuration: configuration)
+        defer { session.finishTasksAndInvalidate() }
         let started = Date()
-        let (data, response) = try await URLSession.shared.upload(for: request, from: body)
+        let (data, response) = try await session.upload(for: request, from: body)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         Log.net.notice("\(model.rawValue, privacy: .public) \(body.count, privacy: .public) bytes -> HTTP \(status, privacy: .public) in \(Int(Date().timeIntervalSince(started) * 1000), privacy: .public) ms")
         let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -69,6 +98,40 @@ enum Transcriber {
         }
         return Transcription(text: ((json?["text"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
                              usage: Usage(json: json?["usage"]))
+    }
+
+    /// Worth one more try: no reply, a dropped or failed connection, or OpenAI busy or failing.
+    /// Not a refused key or a bad request, which would only fail again.
+    static func isWorthRetrying(_ error: Error) -> Bool {
+        if case let HummError.api(status, _) = error { return status == 429 || status >= 500 }
+        guard let error = error as? URLError else { return false }
+        return [.timedOut, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+                .notConnectedToInternet, .secureConnectionFailed, .badServerResponse].contains(error.code)
+    }
+
+    /// What went wrong, in words for the pill and the card.
+    static func explain(_ error: Error) -> String {
+        guard let error = error as? URLError else { return error.localizedDescription }
+        switch error.code {
+        case .timedOut: return "OpenAI didn't reply in time."
+        case .notConnectedToInternet: return "No internet connection."
+        case .networkConnectionLost, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed, .secureConnectionFailed:
+            return "Couldn't reach OpenAI."
+        default: return error.localizedDescription
+        }
+    }
+
+    /// For the log: codes only. OpenAI's messages can quote part of the key.
+    private static func code(of error: Error) -> String {
+        if case let HummError.api(status, _) = error { return "HTTP \(status)" }
+        let error = error as NSError
+        return "\(error.domain) \(error.code)"
+    }
+
+    /// Length of the recording, to allow longer ones more time.
+    private static func audioSeconds(_ file: URL) -> Double {
+        guard let audio = try? AVAudioFile(forReading: file), audio.fileFormat.sampleRate > 0 else { return 60 }
+        return Double(audio.length) / audio.fileFormat.sampleRate
     }
 
     /// Transcripts that are not speech. Given silence, gpt-4o-mini-transcribe repeats the hint back

@@ -231,6 +231,12 @@ final class FloatingPill {
                                        actionSymbol: state.transcriptCopied ? "checkmark" : "doc.on.doc")
             card.onAction = { [weak state] in state?.copyTranscript() }
             card.onClose = { [weak state] in state?.closeTranscript() }
+        } else if let failed = state.failedRecording, state.phase != .recording, state.phase != .transcribing {
+            content = PillCard.Content(heading: "Couldn't transcribe", body: failed.reason,
+                                       detail: "Your \(CostTracker.duration(failed.duration)) recording is kept, so nothing is lost.",
+                                       action: "Try Again", actionSymbol: "arrow.clockwise")
+            card.onAction = { [weak state] in state?.retryFailedRecording() }
+            card.onClose = { [weak state] in state?.discardFailedRecording() }
         } else if let notice = state.learnedNotice {
             content = PillCard.Content(heading: "Added to your dictionary", body: notice.words.joined(separator: ", "),
                                        detail: notice.detail, action: "Undo", actionSymbol: "arrow.uturn.backward")
@@ -327,7 +333,7 @@ final class FloatingPill {
         origin.y = min(max(origin.y, visible.minY), visible.maxY - size.height).rounded()
         panel.setFrame(NSRect(origin: origin, size: size), display: true)
         view.anchor = PillView.Anchor(centre: NSPoint(x: centre.x - origin.x, y: centre.y - origin.y), edge: placement.rail)
-        if state.transcriptToCopy != nil || state.learnedNotice != nil { placeCard() }  // follow the pill
+        if view.cardShowing { placeCard() }  // any card follows the pill
     }
 
     // MARK: Following the pointer

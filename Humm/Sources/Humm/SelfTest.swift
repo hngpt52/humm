@@ -400,16 +400,29 @@ enum SelfTest {
             prompt = positional[index + 1]
             positional.removeSubrange(index...(index + 1))
         }
+        // `--endpoint <url>`: a local stand-in for OpenAI, sent a dummy key, never the real one.
+        var stubbed = false
+        if let index = positional.firstIndex(of: "--endpoint"), index + 1 < positional.count, let url = URL(string: positional[index + 1]) {
+            Transcriber.endpoint = url
+            stubbed = true
+            positional.removeSubrange(index...(index + 1))
+        }
         guard let path = positional.first else {
-            print("usage: Humm --selftest <audio-file> [runs] [--prompt <text>]")
+            print("usage: Humm --selftest <audio-file> [runs] [--prompt <text>] [--endpoint <url>]")
             return 2
         }
         let runs = positional.count > 1 ? max(1, Int(positional[1]) ?? 3) : 3
-        guard let found = APIKeyStore.locate() else {
+        let found: (key: String, file: URL)
+        if stubbed {
+            found = ("sk-stub-not-a-real-key-000000", URL(fileURLWithPath: "/dev/null"))
+            print("endpoint: \(Transcriber.endpoint.absoluteString) (dummy key)")
+        } else if let located = APIKeyStore.locate() {
+            found = located
+            print("key source: \(found.file.path)")
+        } else {
             print("FAIL: no OPENAI_API_KEY found in any .env Humm checks")
             return 1
         }
-        print("key source: \(found.file.path)")
         if let prompt { print("prompt: \"\(prompt)\"") }
         let file = URL(fileURLWithPath: path)
         var failures = 0

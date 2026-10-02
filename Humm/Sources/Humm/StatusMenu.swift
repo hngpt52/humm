@@ -98,6 +98,9 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         let copy = action("Copy Last Transcript", #selector(copyLastTranscript))
         copy.isEnabled = !state.lastTranscript.isEmpty
         menu.addItem(copy)
+        if let failed = state.failedRecording {
+            menu.addItem(action("Try Last Recording Again (\(CostTracker.duration(failed.duration)))", #selector(retryFailedRecording)))
+        }
         menu.addItem(action(APIKeyStore.locate() == nil ? "Add API Key…" : "Change API Key…", #selector(setAPIKey)))
         if !Paster.isTrusted(prompt: false) {
             menu.addItem(action("Grant Accessibility (to paste and learn)…", #selector(grantAccessibility)))
@@ -320,6 +323,10 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 
     @objc private func toggleSounds() {
         state.playSounds.toggle()
+    }
+
+    @objc private func retryFailedRecording() {
+        state.retryFailedRecording()
     }
 
     @objc private func copyLastTranscript() {

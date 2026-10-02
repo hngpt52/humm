@@ -156,6 +156,16 @@ final class AppState {
     }
 
     private(set) var learnedNotice: LearnedNotice?
+
+    /// A recording that could not be transcribed, kept so nothing is lost: Try Again sends it
+    /// again; closing the card (or quitting) deletes it.
+    struct FailedRecording {
+        let url: URL
+        let duration: TimeInterval
+        let reason: String
+    }
+
+    private(set) var failedRecording: FailedRecording?
     private var noticeGeneration = 0
 
     enum RecordingMode { case holdToTalk, handsFree }
@@ -254,6 +264,10 @@ final class AppState {
             showLearned(LearnedNotice(words: ["Plannr"], detail: "Fix \u{201C}planner\u{201D} once more and Humm will change it by itself.",
                                       before: dictionary.words))
         case "card": offerTranscript("Push the Plannr fix to Supabase before the launch, then tell the team it is live.")
+        case "failed":
+            failedRecording = FailedRecording(url: FileManager.default.temporaryDirectory.appendingPathComponent("humm-preview.m4a"),
+                                              duration: 69.7, reason: "OpenAI didn't reply in time.")
+            phase = .error("OpenAI didn't reply in time.")
         default: break
         }
     }
@@ -503,6 +517,12 @@ final class AppState {
             phase = .idle
             return
         }
+        transcribe(clip)
+    }
+
+    /// Sends a recording to OpenAI and delivers the text. The recording is deleted once it has
+    /// been heard; if it could not be, it is kept for Try Again.
+    private func transcribe(_ clip: (url: URL, duration: TimeInterval)) {
         guard let apiKey = APIKeyStore.locate()?.key else {
             try? FileManager.default.removeItem(at: clip.url)
             fail("No API key: choose Add API Key… in the Humm menu.")
@@ -514,17 +534,18 @@ final class AppState {
         // The dictionary's spellings, and for the default model a request to write technical text as typed.
         let hint = TechnicalText.prompt(for: model, dictionaryHint: dictionary.hint(), technical: technicalFormatting)
         Task { [weak self] in
-            defer { try? FileManager.default.removeItem(at: clip.url) }
             do {
                 let loudness = await Task.detached { Recorder.peakLoudness(of: clip.url) }.value
                 if let loudness {
                     Log.app.notice("loudest \(Int(loudness), privacy: .public) dBFS")
                     if loudness < Self.silenceLevel {
+                        try? FileManager.default.removeItem(at: clip.url)
                         self?.phase = .notice("Heard nothing to transcribe.")
                         return
                     }
                 }
                 let result = try await Transcriber.transcribe(fileURL: clip.url, model: model, apiKey: apiKey, prompt: hint)
+                try? FileManager.default.removeItem(at: clip.url)  // heard: nothing to try again
                 guard let self else { return }
                 self.lastLatencyMs = Int(Date().timeIntervalSince(stopped) * 1000)
                 // Billed whatever happens next, noise included.
@@ -575,9 +596,39 @@ final class AppState {
                     self.phase = .notice("Copied: press ⌘V. Allow Accessibility to auto-paste.")
                 }
             } catch {
-                self?.fail(error.localizedDescription)
+                guard let self else {
+                    try? FileManager.default.removeItem(at: clip.url)
+                    return
+                }
+                self.keepFailed(clip, reason: Transcriber.explain(error))
             }
         }
+    }
+
+    // MARK: Failed recordings
+
+    private func keepFailed(_ clip: (url: URL, duration: TimeInterval), reason: String) {
+        if let older = failedRecording, older.url != clip.url { try? FileManager.default.removeItem(at: older.url) }
+        failedRecording = FailedRecording(url: clip.url, duration: clip.duration, reason: reason)
+        Log.app.notice("transcription failed; recording kept for Try Again")
+        fail(reason)
+    }
+
+    /// Sends the kept recording again.
+    func retryFailedRecording() {
+        guard let failed = failedRecording, phase != .recording, phase != .transcribing else { return }
+        failedRecording = nil
+        Log.input.notice("try again")
+        transcribe((failed.url, failed.duration))
+    }
+
+    /// Deletes the kept recording: the card's close button, and quitting.
+    func discardFailedRecording() {
+        guard let failed = failedRecording else { return }
+        try? FileManager.default.removeItem(at: failed.url)
+        failedRecording = nil
+        Log.input.notice("failed recording discarded")
+        onChange()
     }
 
     private func fail(_ message: String) {
