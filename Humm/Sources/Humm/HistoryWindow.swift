@@ -39,7 +39,8 @@ final class HistoryWindow {
         window.contentView = NSHostingView(rootView: view)
         window.isReleasedWhenClosed = false
         window.center()
-        window.setFrameAutosaveName("HummHistory")
+        // Previews leave the saved size and place alone.
+        if !CommandLine.arguments.contains(where: { $0.hasPrefix("--preview") }) { window.setFrameAutosaveName("HummHistory") }
         return window
     }
 }

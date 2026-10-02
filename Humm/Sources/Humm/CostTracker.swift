@@ -124,10 +124,7 @@ final class CostTracker {
 
     /// The first day with a cost.
     var firstDay: Date? {
-        guard let first = days.map(\.date).min() else { return nil }
-        let parts = first.split(separator: "-").compactMap { Int($0) }
-        guard parts.count == 3 else { return nil }
-        return Self.calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+        days.map(\.date).min().flatMap(Self.date(fromKey:))
     }
 
     // MARK: Words
@@ -159,8 +156,8 @@ final class CostTracker {
 
     // MARK: File
 
-    /// Gregorian, in this Mac's time zone, so "today" is the user's today.
-    nonisolated private static var calendar: Calendar {
+    /// Gregorian, in this Mac's time zone, so "today" is the user's today. Insights counts days the same way.
+    nonisolated static var calendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current
         return calendar
@@ -169,6 +166,13 @@ final class CostTracker {
     nonisolated static func dayKey(_ date: Date) -> String {
         let parts = calendar.dateComponents([.year, .month, .day], from: date)
         return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+    }
+
+    /// The start of the day a key names.
+    nonisolated static func date(fromKey key: String) -> Date? {
+        let parts = key.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
     }
 
     private func load() {

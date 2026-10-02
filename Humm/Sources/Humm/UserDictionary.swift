@@ -88,12 +88,18 @@ final class UserDictionary {
     }
 
     /// Replaces spellings the model uses for dictionary words, and notes which words were heard.
-    func apply(to transcript: String) -> String {
+    func apply(to transcript: String) -> String { applyCounting(to: transcript).text }
+
+    /// The transcript with misheard spellings replaced, and how many were (see Insights).
+    func applyCounting(to transcript: String) -> (text: String, fixes: Int) {
         var text = transcript
+        var fixes = 0
         let rules = words.flatMap { word in word.heardAs.map { (from: $0, to: word.text) } }
             .sorted { $0.from.count > $1.from.count }  // "super base" before "base"
         for rule in rules {
-            text = Self.replacing(rule.from, with: rule.to, in: text)
+            let replaced = Self.replacing(rule.from, with: rule.to, in: text)
+            text = replaced.text
+            fixes += replaced.count
         }
         let now = Date()
         var heard = false
@@ -102,7 +108,7 @@ final class UserDictionary {
             heard = true
         }
         if heard { save() }
-        return text
+        return (text, fixes)
     }
 
     // MARK: Learning
@@ -261,10 +267,13 @@ final class UserDictionary {
         return try? NSRegularExpression(pattern: "(?<![\\p{L}\\p{N}])\(body)(?![\\p{L}\\p{N}])", options: .caseInsensitive)
     }
 
-    static func replacing(_ phrase: String, with replacement: String, in text: String) -> String {
-        guard let regex = phrasePattern(phrase) else { return text }
-        return regex.stringByReplacingMatches(in: text, range: NSRange(location: 0, length: (text as NSString).length),
-                                              withTemplate: NSRegularExpression.escapedTemplate(for: replacement))
+    /// Whole-word replacement. `count` is the matches that actually changed: a spelling that only
+    /// differs in capitals can match the word already written right.
+    static func replacing(_ phrase: String, with replacement: String, in text: String) -> (text: String, count: Int) {
+        guard let regex = phrasePattern(phrase) else { return (text, 0) }
+        let range = NSRange(location: 0, length: (text as NSString).length)
+        let count = regex.matches(in: text, range: range).filter { (text as NSString).substring(with: $0.range) != replacement }.count
+        return (regex.stringByReplacingMatches(in: text, range: range, withTemplate: NSRegularExpression.escapedTemplate(for: replacement)), count)
     }
 
     private static func contains(_ phrase: String, in text: String) -> Bool {

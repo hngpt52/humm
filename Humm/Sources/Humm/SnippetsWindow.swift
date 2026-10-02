@@ -36,7 +36,8 @@ final class SnippetsWindow {
         window.contentView = NSHostingView(rootView: view)
         window.isReleasedWhenClosed = false
         window.center()
-        window.setFrameAutosaveName("HummSnippets")
+        // Previews leave the saved size and place alone.
+        if !CommandLine.arguments.contains(where: { $0.hasPrefix("--preview") }) { window.setFrameAutosaveName("HummSnippets") }
         return window
     }
 }

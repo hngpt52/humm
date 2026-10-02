@@ -5,18 +5,23 @@ import Foundation
 /// prompt). Whole words from a fixed list, keeping capitals. Words whose spelling depends on the
 /// meaning are left alone: program (code), practice, license, meter, check, tire, dialog.
 enum BritishSpelling {
-    static func convert(_ text: String) -> String {
+    static func convert(_ text: String) -> String { convertCounting(text).text }
+
+    /// The text in British spelling, and how many words changed (see Insights).
+    static func convertCounting(_ text: String) -> (text: String, count: Int) {
         let words = text as NSString
         var result = ""
         var last = 0
+        var count = 0
         for match in wordPattern.matches(in: text, range: NSRange(location: 0, length: words.length)) {
             let word = words.substring(with: match.range)
             guard let british = table[word.lowercased()] else { continue }
             result += words.substring(with: NSRange(location: last, length: match.range.location - last))
             result += matchCase(british, to: word)
             last = NSMaxRange(match.range)
+            count += 1
         }
-        return last == 0 ? text : result + words.substring(from: last)
+        return (last == 0 ? text : result + words.substring(from: last), count)
     }
 
     private static let wordPattern = try! NSRegularExpression(pattern: "[A-Za-z]+")

@@ -9,6 +9,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     /// Brings the pill back to the bottom centre of the main screen.
     var onResetPill: () -> Void = {}
     var onShowHistory: () -> Void = {}
+    var onShowInsights: () -> Void = {}
     var onShowSnippets: () -> Void = {}
 
     init(state: AppState) {
@@ -44,6 +45,10 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         let british = action("British Spelling", #selector(toggleBritishSpelling))
         british.state = state.britishSpelling ? .on : .off
         menu.addItem(british)
+        let technical = action("Technical Formatting", #selector(toggleTechnicalFormatting))
+        technical.state = state.technicalFormatting ? .on : .off
+        technical.toolTip = "Writes spoken paths, flags and sizes as typed: ~/.config, --force, 2 GB."
+        menu.addItem(technical)
         menu.addItem(costsItem())
         menu.addItem(.separator())
 
@@ -85,6 +90,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         let sounds = action("Play Sounds", #selector(toggleSounds))
         sounds.state = state.playSounds ? .on : .off
         menu.addItem(sounds)
+        menu.addItem(action("Insights…", #selector(showInsights)))
         menu.addItem(historyItem())
         let keep = action("Keep History", #selector(toggleKeepHistory))
         keep.state = state.keepHistory ? .on : .off
@@ -220,6 +226,11 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         state.britishSpelling.toggle()
     }
 
+    @objc private func toggleTechnicalFormatting() {
+        Log.input.notice("menu: technical formatting")
+        state.technicalFormatting.toggle()
+    }
+
     @objc private func toggleKeyboardShortcuts() {
         Log.input.notice("menu: keyboard shortcuts")
         state.keyboardShortcuts.toggle()
@@ -234,6 +245,11 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     @objc private func showSnippets() {
         Log.input.notice("menu: show snippets")
         onShowSnippets()
+    }
+
+    @objc private func showInsights() {
+        Log.input.notice("menu: show insights")
+        onShowInsights()
     }
 
     @objc private func showHistory() {

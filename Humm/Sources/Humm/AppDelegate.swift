@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusMenu: StatusMenu?
     private var pill: FloatingPill?
     private var historyWindow: HistoryWindow?
+    private var insightsWindow: InsightsWindow?
     private var snippetsWindow: SnippetsWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -23,6 +24,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         historyWindow.onCopy = { [weak state] transcript in state?.copyFromHistory(transcript) }
         statusMenu.onShowHistory = { [weak historyWindow] in historyWindow?.show() }
         self.historyWindow = historyWindow
+        let insightsWindow = InsightsWindow(insights: state.insights, costs: state.costs)
+        statusMenu.onShowInsights = { [weak insightsWindow] in insightsWindow?.show() }
+        self.insightsWindow = insightsWindow
         let snippetsWindow = SnippetsWindow(store: state.snippets)
         statusMenu.onShowSnippets = { [weak snippetsWindow] in snippetsWindow?.show() }
         self.snippetsWindow = snippetsWindow
@@ -45,6 +49,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if arguments.contains("--preview-history") {
             historyWindow.show(activate: false, on: previewScreen)
+        }
+        // `--preview-insights` likewise (with `--insights-file` and `--costs-file`).
+        if arguments.contains("--preview-insights") {
+            insightsWindow.show(activate: false, on: previewScreen)
         }
         // `--preview-snippets` likewise (with `--snippets-file`); `--preview-new-snippet` opens the editor.
         if arguments.contains("--preview-snippets") || arguments.contains("--preview-new-snippet") {

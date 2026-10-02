@@ -12,6 +12,9 @@ if let index = CommandLine.arguments.firstIndex(of: "--selftest") {
 if CommandLine.arguments.contains("--selftest-spelling") {
     exit(SelfTest.spelling())
 }
+if CommandLine.arguments.contains("--selftest-format") {
+    exit(SelfTest.formatting())
+}
 if CommandLine.arguments.contains("--selftest-snippets") {
     exit(MainActor.assumeIsolated { SelfTest.snippets() })
 }
@@ -23,6 +26,9 @@ if CommandLine.arguments.contains("--selftest-costs") {
 }
 if CommandLine.arguments.contains("--selftest-key") {
     exit(SelfTest.keyFile())
+}
+if CommandLine.arguments.contains("--selftest-insights") {
+    exit(MainActor.assumeIsolated { SelfTest.insights() })
 }
 
 // Dictionary checks (see DictionaryTests).

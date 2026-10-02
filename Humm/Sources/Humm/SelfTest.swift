@@ -26,6 +26,48 @@ enum SelfTest {
         return failures == 0 ? 0 : 1
     }
 
+    /// `Humm --selftest-format`: technical formatting, offline.
+    static func formatting() -> Int32 {
+        var failures = 0
+        func check(_ said: String, _ written: String, _ name: String) {
+            let tidied = TechnicalText.tidy(said).text
+            print((tidied == written ? "PASS " : "FAIL ") + name + (tidied == written ? "" : " got: \(tidied)"))
+            if tidied != written { failures += 1 }
+        }
+        check("There's a 1.2 gigabyte .next slash dev folder.", "There's a 1.2 GB .next/dev folder.", "a real dictation")
+        check("Clear .next slash dev slash cache now.", "Clear .next/dev/cache now.", "a chain of slashes")
+        check("Look in ~ slash Library first.", "Look in ~/Library first.", "a path from home")
+        check("Open lib/utils.ts slash helpers please.", "Open lib/utils.ts/helpers please.", "after a path")
+        check("About 500 megabytes, a 2-gigabyte file and 3 kilobytes.", "About 500 MB, a 2 GB file and 3 KB.", "sizes in words")
+        check("The 2TB drive and 1.5GB of logs.", "The 2 TB drive and 1.5 GB of logs.", "a space before units")
+        check("Run npm install dash dash save-dev now.", "Run npm install --save-dev now.", "flags")
+        check("Delete node underscore modules and snake underscore case underscore name.", "Delete node_modules and snake_case_name.", "snake_case")
+        check("We need to slash the budget by 20%.", "We need to slash the budget by 20%.", "slash as a verb")
+        check("Meet me on the dot of nine. Pages 2 slash 3 are fine.", "Meet me on the dot of nine. Pages 2 slash 3 are fine.", "prose stays prose")
+        check("We have 2 gigs this weekend.", "We have 2 gigs this weekend.", "a gig is not a gigabyte")
+        check("End of story. Slash notes later.", "End of story. Slash notes later.", "a full stop is not a path")
+        let counted = TechnicalText.tidy("There's a 1.2 gigabyte .next slash dev folder.").count
+        print((counted == 2 ? "PASS " : "FAIL ") + "counts the changes" + (counted == 2 ? "" : " got: \(counted)"))
+        if counted != 2 { failures += 1 }
+
+        let words = "Ada Lovelace, Plannr."
+        let mini = TechnicalText.prompt(for: .gpt4oMiniTranscribe, dictionaryHint: words, technical: true)
+        let promptChecks: [(Bool, String)] = [
+            (mini == TechnicalText.styleHint + " " + words, "the default model gets the style hint, then the words"),
+            (TechnicalText.prompt(for: .whisper1, dictionaryHint: words, technical: true) == words, "whisper-1 gets only the words"),
+            (TechnicalText.prompt(for: .gpt4oMiniTranscribe, dictionaryHint: words, technical: false) == words, "switched off: only the words"),
+            (TechnicalText.prompt(for: .whisper1, dictionaryHint: nil, technical: true) == nil, "nothing to send: no prompt"),
+            (Transcriber.isNoise(TechnicalText.styleHint, hint: mini), "the style hint echoed back is noise"),
+            (!Transcriber.isNoise("Check the file names in lib/utils.ts.", hint: mini), "a sentence about files is speech"),
+        ]
+        for (ok, name) in promptChecks {
+            print((ok ? "PASS " : "FAIL ") + name)
+            if !ok { failures += 1 }
+        }
+        print(failures == 0 ? "all passed" : "\(failures) failed")
+        return failures == 0 ? 0 : 1
+    }
+
     /// `Humm --selftest-snippets`: snippet rules and the file, without the network or the interface.
     @MainActor
     static func snippets() -> Int32 {
@@ -146,6 +188,89 @@ enum SelfTest {
         }
         check(CostTracker.describe(CostTracker.Total(requests: 1, seconds: 12, cost: 0.0004)) == "$0.0004 · 1 dictation, 12 s", "one dictation")
         check(CostTracker.describe(CostTracker.Total()) == "$0.00", "nothing")
+
+        print(failures == 0 ? "all passed" : "\(failures) failed")
+        return failures == 0 ? 0 : 1
+    }
+
+    /// `Humm --selftest-insights`: the insights file and what is worked out from it, offline.
+    @MainActor
+    static func insights() -> Int32 {
+        var failures = 0
+        func check(_ ok: Bool, _ name: String, _ detail: @autoclosure () -> String = "") {
+            print((ok ? "PASS " : "FAIL ") + name + (ok ? "" : " " + detail()))
+            if !ok { failures += 1 }
+        }
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("humm-insights-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let calendar = CostTracker.calendar
+        let now = calendar.date(from: DateComponents(year: 2026, month: 10, day: 2, hour: 12))!
+        func day(_ offset: Int) -> Date { calendar.date(byAdding: .day, value: offset, to: now)! }
+
+        let insights = Insights(file: file)
+        check(insights.isNew && insights.days.isEmpty, "starts new and empty")
+        insights.record(words: 100, seconds: 60, app: "Claude", dictionaryFixes: 2, spellingFixes: 1, snippets: 0, at: now)
+        insights.record(words: 50, seconds: 30, app: "WhatsApp", dictionaryFixes: 0, spellingFixes: 3, snippets: 1, at: now)
+        insights.record(words: 40, seconds: 20, app: "Claude", dictionaryFixes: 1, spellingFixes: 0, snippets: 0, at: day(-1))
+        for offset in 8...12 { insights.record(words: 10, seconds: 10, app: "Mail", dictionaryFixes: 0, spellingFixes: 0, snippets: 0, at: day(-offset)) }
+        insights.recordLearned(2, at: now)
+
+        let all = insights.summary(.allTime, now: now)
+        check(all.dictations == 8 && all.words == 240 && all.seconds == 160, "adds up dictations, words and time", "\(all)")
+        check(all.dictionaryFixes == 3 && all.spellingFixes == 4 && all.snippets == 1 && all.fixes == 8 && all.wordsLearned == 2, "adds up fixes and words learned")
+        check(abs((all.wordsPerMinute ?? 0) - 90) < 1e-9, "words per minute over recording time", "\(String(describing: all.wordsPerMinute))")
+        check(abs(all.minutesSaved - (240 / 40 - 160.0 / 60)) < 1e-9, "time saved over typing at 40 wpm")
+        check(insights.summary(.thisMonth, now: now).words == 190 && insights.summary(.lastMonth, now: now).words == 50, "this month and last month")
+        let months = Insights(file: file.deletingLastPathComponent().appendingPathComponent("humm-months-\(UUID().uuidString).json"))
+        defer { try? FileManager.default.removeItem(at: months.file) }
+        for (offset, words) in [(-31, 10), (-30, 20), (-29, 40), (-1, 5)] {
+            months.record(words: words, seconds: 10, app: nil, dictionaryFixes: 0, spellingFixes: 0, snippets: 0, at: day(offset))
+        }
+        check(months.summary(.lastMonthSoFar, now: now).words == 30 && months.summary(.lastMonth, now: now).words == 70,
+              "a month in progress compares with the same days last month", "\(months.summary(.lastMonthSoFar, now: now).words)")
+
+        check(insights.currentStreak(now: now) == 2, "current streak: today and yesterday", "\(insights.currentStreak(now: now))")
+        check(insights.currentStreak(now: day(1)) == 2, "nothing yet today: the streak runs to yesterday")
+        check(insights.currentStreak(now: day(2)) == 0, "a day missed ends it")
+        check(insights.longestStreak() == 5, "longest streak", "\(insights.longestStreak())")
+        insights.recordLearned(-5, at: now)
+        check(insights.summary(.allTime).wordsLearned == 0, "undone learning never goes below nothing")
+
+        let apps = insights.apps()
+        check(apps.map(\.name) == ["Claude", "Mail", "WhatsApp"] && apps[0].use.dictations == 2 && apps[0].use.words == 140, "apps, most words first, ties by name", "\(apps)")
+        let kinds = Dictionary(uniqueKeysWithValues: insights.categories().map { ($0.category, $0.dictations) })
+        check(kinds[.aiPrompts] == 2 && kinds[.personalMessages] == 1 && kinds[.emails] == 5 && kinds[.documents] == 0, "dictations per kind of app", "\(kinds)")
+        let named: [(String, Insights.Category)] = [("Microsoft Outlook", .emails), ("Microsoft Word", .documents), ("Slack", .workMessages),
+                                                    ("Microsoft Teams", .workMessages), ("Messages", .personalMessages), ("ChatGPT", .aiPrompts),
+                                                    ("Google Chrome", .other), ("Terminal", .other), ("Notes", .documents)]
+        for (app, kind) in named { check(Insights.category(of: app) == kind, "\(app) is \(kind.rawValue)") }
+
+        check(Insights.wordCount("Hello, world! It's 3 o'clock.") == 5 && Insights.wordCount("  -  ") == 0, "counts words")
+        check(Insights.level(words: 0, busiest: 100) == 0 && Insights.level(words: 1, busiest: 100) == 1
+              && Insights.level(words: 50, busiest: 100) == 2 && Insights.level(words: 100, busiest: 100) == 4, "calendar levels")
+
+        let reloaded = Insights(file: file)
+        check(!reloaded.isNew && reloaded.days == insights.days, "saved and read back")
+        let permissions = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.posixPermissions] as? Int
+        check(permissions == 0o600, "file is private (0600)")
+
+        let seeded = Insights(file: file.deletingLastPathComponent().appendingPathComponent("humm-seeded-\(UUID().uuidString).json"))
+        defer { try? FileManager.default.removeItem(at: seeded.file) }
+        var newer = Transcript(text: "Four words right here.", app: "Claude", outcome: .pasted, seconds: 2, model: "gpt-4o-mini-transcribe")
+        newer.date = now
+        var older = Transcript(text: "One two three.", app: "Notes", outcome: .pasted, seconds: 3, model: "gpt-4o-mini-transcribe")
+        older.date = day(-1)
+        seeded.seed(from: [newer, older])
+        check(seeded.days.count == 2 && seeded.summary(.allTime).words == 7 && seeded.apps().count == 2, "starts from History's transcripts")
+        seeded.seed(from: [older])
+        check(seeded.summary(.allTime).dictations == 2, "seeds only once")
+
+        try? Data("{ not json".utf8).write(to: file)
+        let broken = Insights(file: file)
+        let asides = (try? FileManager.default.contentsOfDirectory(at: file.deletingLastPathComponent(), includingPropertiesForKeys: nil))?
+            .filter { $0.lastPathComponent.hasPrefix(file.deletingPathExtension().lastPathComponent + ".unreadable-") } ?? []
+        check(broken.days.isEmpty && asides.count == 1, "an unreadable file is kept aside, not overwritten")
+        asides.forEach { try? FileManager.default.removeItem(at: $0) }
 
         print(failures == 0 ? "all passed" : "\(failures) failed")
         return failures == 0 ? 0 : 1

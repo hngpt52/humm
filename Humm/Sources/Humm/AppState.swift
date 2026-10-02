@@ -109,12 +109,21 @@ final class AppState {
     let dictionary = UserDictionary()
     let history: TranscriptHistory
     let costs: CostTracker
+    let insights: Insights
 
     /// Turn American spellings into British ones (see BritishSpelling). On by default where British
     /// spelling is the norm.
     var britishSpelling: Bool {
         didSet {
             UserDefaults.standard.set(britishSpelling, forKey: "britishSpelling")
+            onChange()
+        }
+    }
+
+    /// Write spoken paths, flags and sizes as they are typed (see TechnicalText).
+    var technicalFormatting: Bool {
+        didSet {
+            UserDefaults.standard.set(technicalFormatting, forKey: "technicalFormatting")
             onChange()
         }
     }
@@ -169,6 +178,7 @@ final class AppState {
         keyboardShortcuts = defaults.object(forKey: "keyboardShortcuts") as? Bool ?? true
         keepHistory = defaults.object(forKey: "keepHistory") as? Bool ?? true
         britishSpelling = defaults.object(forKey: "britishSpelling") as? Bool ?? Self.britishRegion
+        technicalFormatting = defaults.object(forKey: "technicalFormatting") as? Bool ?? true
         // `--history-file <path>` (developer previews) reads and writes another file.
         let arguments = CommandLine.arguments
         history = arguments.firstIndex(of: "--history-file").flatMap { index in
@@ -182,6 +192,10 @@ final class AppState {
         costs = arguments.firstIndex(of: "--costs-file").flatMap { index in
             index + 1 < arguments.count ? CostTracker(file: URL(fileURLWithPath: arguments[index + 1])) : nil
         } ?? CostTracker()
+        // `--insights-file <path>` likewise.
+        insights = arguments.firstIndex(of: "--insights-file").flatMap { index in
+            index + 1 < arguments.count ? Insights(file: URL(fileURLWithPath: arguments[index + 1])) : nil
+        } ?? Insights()
         learnFromCorrections = defaults.object(forKey: "learnFromCorrections") as? Bool ?? true
         corrections.isEnabled = learnFromCorrections
         corrections.onCorrections = { [weak self] found in self?.learn(found) }
@@ -189,6 +203,10 @@ final class AppState {
         keys.onIntent = { [weak self] intent in self?.handle(intent) }
         keys.isEnabled = keyboardShortcuts
         keys.start()
+        // A new insights file starts from what History kept; never from previews or sample history.
+        if insights.isNew, !arguments.contains(where: { $0.hasPrefix("--preview") || $0 == "--history-file" }) {
+            insights.seed(from: history.entries)
+        }
     }
 
     var statusText: String {
@@ -360,6 +378,7 @@ final class AppState {
     private func learn(_ found: [Corrections.Candidate]) {
         let before = dictionary.words
         let words = dictionary.learn(found)
+        insights.recordLearned(words.count)
         Log.app.notice("dictionary: \(words.count, privacy: .public) word(s) learned")
         onChange()
         guard let first = words.first else { return }
@@ -401,6 +420,7 @@ final class AppState {
     func undoLearned() {
         guard let notice = learnedNotice else { return }
         dictionary.restore(notice.before)
+        insights.recordLearned(-notice.words.count)
         Log.input.notice("dictionary: learning undone")
         closeLearned()
     }
@@ -491,7 +511,8 @@ final class AppState {
         phase = .transcribing
         let stopped = Date()
         let model = model
-        let hint = dictionary.hint()
+        // The dictionary's spellings, and for the default model a request to write technical text as typed.
+        let hint = TechnicalText.prompt(for: model, dictionaryHint: dictionary.hint(), technical: technicalFormatting)
         Task { [weak self] in
             defer { try? FileManager.default.removeItem(at: clip.url) }
             do {
@@ -517,10 +538,21 @@ final class AppState {
                     return
                 }
                 // Spelling first, so the dictionary's spellings and the snippets' text win.
-                if self.britishSpelling { text = BritishSpelling.convert(text) }
-                text = self.dictionary.apply(to: text)
+                var spellingFixes = 0
+                if self.britishSpelling {
+                    let british = BritishSpelling.convertCounting(text)
+                    text = british.text
+                    spellingFixes = british.count
+                }
+                if self.technicalFormatting { text = TechnicalText.tidy(text).text }
+                let applied = self.dictionary.applyCounting(to: text)
+                text = applied.text
                 let expanded = self.snippets.expand(text)
                 if expanded.count > 0 { Log.app.notice("snippets: \(expanded.count, privacy: .public) expanded") }
+                // Words as said: a snippet counts as its phrase.
+                self.insights.record(words: Insights.wordCount(text), seconds: clip.duration,
+                                     app: NSWorkspace.shared.frontmostApplication?.localizedName,
+                                     dictionaryFixes: applied.fixes, spellingFixes: spellingFixes, snippets: expanded.count)
                 text = expanded.text
                 self.lastTranscript = text
                 if Paster.isTrusted(prompt: false) {
